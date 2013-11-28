@@ -1,0 +1,33 @@
+kit:
+  name: "PetClinic Ide"
+  link: http://qubell.com
+  applications: 
+    - name: "PetClinic Ide (main)"
+      manifest: "https://raw.github.com/qubell/component-functional-tester/master/demo/petclinic_ide.yml"
+    - name: "Selenium Grid"
+      manifest: "https://dl.dropboxusercontent.com/u/15604911/Manifests/PetClinicIde2/selenium-grid-manifest.yml"
+    - name: "Functional Tester"
+      manifest: "https://raw.github.com/qubell/component-functional-tester/master/functional_tester.yml"
+    - name: "PetClinic"
+      manifest: "https://raw.github.com/jollyrojer/component-petclinic-main/master/main_app.yml"
+    - name: "lb"
+      manifest: "https://raw.github.com/jollyrojer/component-haproxy/master/haproxy.yml"
+    - name: "db"
+      manifest: "https://raw.github.com/jollyrojer/component-mysql/master/mysql.yml"
+    - name: "app"
+      manifest: "https://raw.github.com/jollyrojer/component-tomcat/master/tomcat.yml"
+  provider:
+    name: "Qubell"
+    link: http://qubell.com
+  documentation:
+    overview: |
+        Welcome to PetClinic Ide, this is the world where you can build CI-CD from scratch.
+        Ensure that environment has:
+          Cloud Account: your Aws Ec2
+          Services:
+            - Vault 2.0 with key Policy
+            - Workflow Service
+          Properties:
+            map<string,string> s3-credentials 
+              access-key: `aws key for s3 upload`
+              secret-key: `aws secret key for s3 upload`

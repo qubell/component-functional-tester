@@ -1,0 +1,638 @@
+application:
+  configuration:
+
+    git.target-path: /tmp/git-repo
+
+    maven.pom-name: itpom.xml
+    maven.root-path: /tmp/git-repo/integration-test
+
+    s3.bucket: petclinic-test-results
+    s3.static-web: http://petclinic-test-results.s3-website-us-east-1.amazonaws.com
+    s3.https-direct: https://s3.amazonaws.com/petclinic-test-results
+
+    reports.atdd-path: /tmp/git-repo/integration-test/target/atdd
+    reports.dashboard-path: /tmp/git-repo/integration-test/target/dashboard
+    reports.junit-path: /tmp/git-repo/integration-test/target/failsafe-reports
+
+  interfaces:
+    maven:
+      pom-name: bind(maven.mavenizer#input.pom-name)
+      root-path: bind(maven.mavenizer#input.root-path)
+    git:
+      target-path: bind(git.gitter#input.target-path)
+    s3:
+      bucket: bind(s3.s3processor#input.bucket)
+      static-web: bind(s3.s3processor#input.static-web)
+      https-direct: bind(s3.s3processor#input.https-direct)
+    reports:
+      atdd-path: bind(reporter.reportee#input.atdd-path)
+      dashboard-path: bind(reporter.reportee#input.dashboard-path)
+      junit-path: bind(reporter.reportee#input.junit-path)
+
+    develop:
+      test: bind(tester.functional#actions.test)
+    analyse:
+      published-atdd: bind(tester.functional#result.static-web)
+      local-dashboard: bind(reporter.reportee#result.dashboard-url)
+
+    #widget support, interface is a type
+    chart:
+      progress: bind(tester.functional#result.test-progress)
+    frame:
+      https-direct: bind(tester.functional#result.https-direct)
+
+  bindings:
+    - [selenium, tester.functional]
+
+    #java machine
+    - [java-vm, git.gitter]
+    - [java-vm, maven.mavenizer]
+    - [java-vm, reporter.reportee]
+    - [java-vm, s3.s3processor]
+    - [java-vm, tester.functional]
+    #function tester    
+    - [maven, tester.functional]
+    - [s3, tester.functional]
+    - [reporter, tester.functional]
+    - [git, tester.functional]
+    #core+keystore
+    - [genesis, tester.functional]
+    - [keystore, tester.functional]
+    - [genesis2, java-vm.provisioner]
+    - [keystore2, java-vm.provisioner]
+    - [genesis3, git.gitter]
+    - [keystore3, git.gitter]
+    - [genesis4, maven.mavenizer]
+    - [keystore4, maven.mavenizer]
+    - [genesis5, reporter.reportee]
+    - [keystore5, reporter.reportee]
+    - [genesis6, s3.s3processor]
+    - [keystore6, s3.s3processor]
+
+
+  components:
+
+################ COMPONENTS ################
+    java-vm:
+      interfaces:
+        vm: 
+          single-host: bind(provisioner#result.host)
+      components:
+        provisioner:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            result:
+              host: publish-signal(string)
+          required: [ keystore ]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps:
+                  - provision:
+                      action: provisionVms
+                      phase: provision
+                      parameters: 
+                        roleName: vm
+                        hardwareId: m1.small
+                        vmIdentity: ubuntu
+                        imageId: us-east-1/ami-0fac7566
+                      output:
+                        host: ips
+                  - install-java:
+                      action: chefrun
+                      phase: install-java
+                      precedingPhases: [ provision ]
+                      parameters:
+                        roles: [ vm ]
+                        isSolo: true
+                        runList: ["recipe[java]" ]
+                        recipeUrl: "https://s3.amazonaws.com/adp-chef/cookbooks-v0.0.4.tar.gz"
+                  - http-total:
+                      action: execrun
+                      precedingPhases: [ provision ]
+                      parameters:
+                          roles: [ vm ]
+                          isSudo: true
+                          command:
+                              - "cd / ; python -m SimpleHTTPServer 6655 &"
+                return:        
+                  host:
+                      value: "{$.host[0]}"
+                  view-filesystem-url:
+                      value: "http://{$.host[0]}:6655"
+              destroy:
+                steps:
+                  - undeploy:
+                      action: undeployEnv
+    maven:
+      interfaces:
+        maven:
+          build: bind(mavenizer#actions.build)
+      components:
+        mavenizer:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            input:
+              pom-name: configuration(string)
+              root-path: configuration(string)
+            vm:
+              single-host: consume-signal(string)
+            actions:
+              build: receive-command(string goals-and-options)
+          required: [ vm, keystore ]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps:
+                  - env: &grab-env
+                      action: getEnvironmentProperties
+                      phase: env
+                      output:
+                        result: result
+                  - grab-vm: &grab-vm
+                      action: provisionVms
+                      phase: grab-vm
+                      precedingPhases: [env]
+                      parameters: 
+                        roleName: vm
+                        staticIps: ["{$.result.vm.single-host}"]
+                        hardwareId: "" # todo: known issue
+                        vmIdentity: ubuntu
+                  - get-maven:
+                      action: chefrun
+                      phase: get-maven
+                      precedingPhases: [ grab-vm ]
+                      parameters:
+                          roles: [ vm ]
+                          isSolo: true
+                          runList: ["recipe[maven]"]
+                          recipeUrl: "https://s3.amazonaws.com/adp-chef/petclinic_cookbooks-v2.tar.gz"
+                          jattrs:
+                              maven:
+                                  version: 3
+                                  setup_bin: true
+                                  "3":
+                                      url: "http://apache.mirrors.tds.net/maven/maven-3/3.0.5/binaries/apache-maven-3.0.5-bin.tar.gz"
+              build:
+                parameters:
+                  goals-and-options:
+                    description: Specifies the goals to execute, such as "clean install" or "deploy". This field can also accept any other command line options to Maven, such as "-e" or "-Dmaven.test.skip=true"
+                steps:
+                  - build: 
+                      action: execrun
+                      parameters:
+                          roles: [ vm ]
+                          command:
+                              - !
+                                  cd {$.root-path};
+                                  mvn -f {$.pom-name} {$.goals-and-options}
+              destroy:
+                steps: []
+    git:
+      interfaces:
+        git:
+          clone: bind(gitter#actions.clone)
+      components:
+        gitter:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            input:
+              target-path: configuration(string)
+            vm:
+              single-host: consume-signal(string)
+            actions:
+              clone: receive-command(object scm-settings)
+          required: [ vm, keystore ]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps: []
+              clone:
+                parameters:
+                  scm-settings:
+                    description: branch and url for git
+                  #target-path:
+                  #  default: /tmp/git-repo
+                steps:
+                  - env: *grab-env
+                  - grab-vm: *grab-vm
+                  - install-git:
+                      action: execrun
+                      phase: install-git
+                      precedingPhases: [ grab-vm ]
+                      parameters:
+                          roles: [ vm ]
+                          isSudo: true
+                          command: 
+                              - !
+                                  which git || (which yum && sudo yum -y install git-core || sudo apt-get -y --force-yes install git-core) || true
+                  - clone-repo:
+                      action: execrun
+                      precedingPhases: [ install-git ]
+                      parameters:
+                          roles: [ vm ]
+                          command:
+                              # this is the quikest is to remove and clone other branch, but the right way are remotes.
+                              - !
+                                  mkdir -p {$.target-path};
+                                  rm -rf {$.target-path};
+                                  git clone {$.scm-settings.url} -b {$.scm-settings.branch} {$.target-path}
+              destroy:
+                steps: []
+
+    s3:
+      interfaces:
+        s3:
+          upload: bind(s3processor#actions.upload)
+          static-web: bind(s3processor#result.static-web)
+          https-direct: bind(s3processor#result.https-direct)
+      bindings:
+        - [s3-properties, s3processor]
+      components:
+        s3-properties:
+          type: reference.Service
+          interfaces:
+            properties:
+              s3-credentials: publish-signal(map<string,string>)
+        s3processor:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            input:
+              bucket: configuration(string)
+              static-web: configuration(string)
+              https-direct: configuration(string)
+            vm:
+              single-host: consume-signal(string)
+            s3-options:
+              s3-credentials: consume-signal(map<string,string>)
+            actions:
+              upload: receive-command(string relative-path, string source-path)
+            result:
+              static-web: publish-signal(string)
+              https-direct: publish-signal(string)
+          required: [vm, s3-options, keystore]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps: 
+                  - env: *grab-env
+                  - grab-vm: *grab-vm
+                  - install-s3cmd:
+                      action: execrun
+                      phase: install-s3cmd
+                      precedingPhases: [ grab-vm ]
+                      parameters:
+                          roles: [ vm ]
+                          isSudo: true
+                          command:
+                              - ! 
+                                  which s3cmd || (which yum && sudo yum -y install s3cmd || sudo apt-get -y --force-yes install s3cmd) || true
+                  - configure-s3cmd:
+                      action: execrun
+                      phase: config-s3cmd
+                      precedingPhases: [ injection, install-s3cmd ]
+                      parameters:
+                          roles: [ vm ]
+                          command: #todo: change s3 adress
+                              - !
+                                  curl -Lkso s3cmd.conf.sh https://s3.amazonaws.com/qubell-repository/s3cmd.conf.sh;
+                                  chmod +x s3cmd.conf.sh;
+                                  AWS_ACCESS_KEY_ID={$.result.s3-options.s3-credentials.access-key} AWS_SECRET_ACCESS_KEY={$.result.s3-options.s3-credentials.secret-key} ./s3cmd.conf.sh >~/.s3cfg
+                return:
+                  #broadcasting
+                  static-web: 
+                    value: ${static-web}
+                  https-direct: 
+                    value: ${https-direct}
+              upload:
+                parameters:
+                  source-path:
+                    description: ""
+                  relative-path:
+                    description: "start from /"
+                steps:
+                  - upload-results:
+                      action: execrun
+                      parameters:
+                          roles: [ vm ]
+                          command:
+                              - !
+                                  s3cmd put -r {$.source-path} s3://{$.bucket}/{$.relative-path}
+              destroy:
+                steps: []
+
+    #this component can do a lot of staff
+    reporter:
+      interfaces:
+        report:
+          generate-report: bind(reportee#actions.generate-report)
+          atdd-path: bind(reportee#result.atdd-path)
+          dashboard-path: bind(reportee#result.dashboard-path)
+      components:
+        reportee:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            input:
+              dashboard-path: configuration(string)
+              junit-path: configuration(string)
+              atdd-path: configuration(string)
+            actions:
+              generate-report: receive-command(string test-id => string progress)
+            result:
+              dashboard-url: publish-signal(string)
+              dashboard-path: publish-signal(string)
+              atdd-path: publish-signal(string)
+            vm:
+              single-host: consume-signal(string)
+
+          required: [ vm, keystore ]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps: 
+                  - env: *grab-env
+                  - grab-vm: *grab-vm
+                  - http-dashboard:
+                      action: execrun
+                      precedingPhases: [ grab-vm ]
+                      parameters:
+                          roles: [ vm ]
+                          command:
+                              - "mkdir -p ${dashboard-path}; cd ${dashboard-path} ; python -m SimpleHTTPServer 8899 &"
+                return:
+                  dashboard-url:
+                      value: "http://{$.result.vm.single-host}:8899"
+                  #brodcasting...
+                  dashboard-path: { value: "${dashboard-path}" }
+                  atdd-path: { value: "${atdd-path}" }
+              generate-report:
+                parameters:
+                  test-id:
+                    description: test-id
+                steps:
+                  - report-gen:
+                      action: execrun
+                      phase: generate-xml
+                      precedingPhases: [ injection ]
+                      parameters:
+                          roles: [ vm ]
+                          command: 
+                            - !
+                                mkdir -p ${dashboard-path};
+                                cd ${dashboard-path};
+                                curl -Lkso collect.sh https://s3.amazonaws.com/qubell-repository/test-report-generator/collect.sh 
+                                  && chmod +x collect.sh
+                                  && ./collect.sh ${junit-path} ${test-id}.xml
+                  - install-xsltproc:
+                      action: execrun
+                      phase: "prepare-xsltoroc"
+                      precedingPhases: [ generate-xml]
+                      parameters:
+                        roles: [ vm ]
+                        isSudo: true
+                        command:
+                          - !
+                              cd ${dashboard-path};
+                              curl -Lkso progress.sh https://s3.amazonaws.com/qubell-repository/test-report-generator/progress.sh 
+                                && chmod +x progress.sh
+                                && ./progress.sh ${test-id}.xml
+                      output:
+                        progress_raw: stdout
+                return:
+                  progress:
+                    value: "{$.progress_raw[*][0]}"
+              destroy:
+                steps: []
+
+
+################ COMPONENTS END ################
+
+    tester:
+      components:
+        functional:
+          type: workflow.Instance
+          interfaces:
+            keystore:
+              get-keypair: send-command(string id => object privateKey)
+            selenium:
+              console-url: consume-signal(string)
+              remote-url: consume-signal(string)
+
+            #decomposition
+            vm:
+              single-host: consume-signal(string)
+            git:
+              clone: send-command(object scm-settings)
+            s3:
+              upload: send-command(string relative-path, string source-path)
+              static-web: consume-signal(string)
+              https-direct: consume-signal(string)
+            maven:
+              build: send-command(string goals-and-options)
+            #todo: develop:
+            actions:
+              test: receive-command(string base-url, string app-fork, string app-branch, string app-repo, string tag  => string test-progress, string test-run-id, string stamp)
+            reporter:
+              generate-report: send-command(string test-id => string progress)
+              atdd-path: consume-signal(string)
+              dashboard-path: consume-signal(string)
+            result:
+              test-progress: publish-signal(string)
+              test-run-id: publish-signal(string)
+              static-web: publish-signal(string)
+              https-direct: publish-signal(string)
+
+          required: [selenium, keystore, vm, git, s3, maven, reporter]
+          configuration:
+            configuration.workflows:
+              launch:
+                steps: []
+                return:        
+                    test-progress: 
+                      value: waiting for real publish-signal(string)
+                    test-run-id:  
+                      value: waiting for real publish-signal(string)
+                    static-web:  
+                      value: waiting for real publish-signal(string)
+                    https-direct:  
+                      value: waiting for real publish-signal(string)
+              #todo: develop.test:
+              test:
+                parameters:
+                  base-url:
+                    description: Landing Url
+                  app-repo:
+                    description: Source control repo
+                  app-fork: 
+                    description: Source control fork
+                  app-branch: 
+                    description: Source control branch
+                  tag: 
+                    description: Tag
+
+                steps: 
+                  - env: *grab-env
+                  - grab-vm: *grab-vm
+                  - clone: 
+                      action: serviceCall
+                      phase: clone
+                      precedingPhases: [ grab-vm ]
+                      parameters:
+                        timeout: 300
+                        service: git
+                        command: clone
+                        arguments:
+                          scm-settings:
+                            url: "https://github.com/${app-fork}/${app-repo}.git"
+                            branch: "${app-branch}"
+                  - test: 
+                      action: serviceCall
+                      phase: testing
+                      precedingPhases: [ clone ]
+                      parameters:
+                        timeout: 600
+                        service: maven
+                        command: build
+                        arguments:
+                          goals-and-options: "clean integration-test thucydides:aggregate -Dwebdriver.base.url=${base-url} -Dthucydides.outputDirectory={$.result.reporter.atdd-path} -Dthucydides.sourceDirectory={$.result.reporter.atdd-path} -Dwebdriver.remote.url={$.result.selenium.remote-url} -Dmaven.test.failure.ignore=true"
+
+                  - test-id:
+                      action: .id-gen
+                      phase: testing
+                      precedingPhases: [ clone ]
+                      parameters:
+                        app-fork: ${app-fork}
+                        app-branch: ${app-branch}
+                        tag: ${tag}
+                      output:
+                        stamp: stamp
+                        test-id: test-id
+
+                  - report:
+                      action: serviceCall
+                      phase: reporting
+                      precedingPhases: [ testing ]
+                      parameters:
+                        timeout: 300
+                        service: reporter
+                        command: generate-report
+                        arguments:
+                          test-id: ${test-id}
+                      output:
+                        report_result: result
+
+                  - upload:
+                      action: serviceCall
+                      phase: upload
+                      precedingPhases: [ reporting, env ]
+                      parameters:
+                        timeout: 300
+                        service: s3
+                        command: upload
+                        arguments:
+                          relative-path: "{$.stamp}/"
+                          source-path: "{$.result.reporter.atdd-path}"
+
+                  - upload2:
+                      action: serviceCall
+                      phase: upload2
+                      precedingPhases: [ upload ]
+                      parameters:
+                        timeout: 300
+                        service: s3
+                        command: upload
+                        arguments:
+                          relative-path: "{$.stamp}/"
+                          source-path: "{$.result.reporter.dashboard-path}/${test-id}.xml"
+
+                return:  
+                  test-progress: 
+                    value: "{$.report_result.progress}"
+                  test-run-id: 
+                    description: "Latest Run Id"
+                    value: "{$.stamp}"
+                  stamp:
+                    value: "{$.test-id}"
+                  static-web:
+                    value: "{$.result.s3.static-web}/{$.stamp}/atdd/"
+                  https-direct:
+                    value: "{$.result.s3.https-direct}/{$.stamp}/atdd/index.html"
+
+
+              #Gen Pretty Unique IDs
+              .id-gen:
+                  parameters:
+                    app-fork:
+                      description: fork
+                    app-branch:
+                      description: branch
+                    tag:
+                      description: any word
+                  steps:
+                      - upload-results:
+                          action: execrun
+                          parameters:
+                            roles: [ vm ]
+                            command:
+                              - !
+                                  TEST_ID=${app-fork}_${app-branch}_${tag};
+                                  echo $$TEST_ID;
+                                  STAMP=$${{TEST_ID}}__$$(date -u +%Y%m%d%H%M%S);
+                                  echo $$STAMP >&2
+                          output:
+                            stamp: stderr
+                            testid: stdout
+                  return:
+                    stamp:
+                      value: "{$.stamp[*][0]}"
+                    test-id:
+                      value: "{$.testid[*][0]}" 
+
+              destroy:
+                steps: []
+
+    selenium:
+      type: reference.Submodule
+      configuration:
+        __locator.application-id: "Selenium Grid"
+      interfaces:
+        endpoints:
+          console-url: publish-signal(string)
+          remote-url: publish-signal(string)
+
+    genesis: &genesis-service
+      type: reference.Service
+      interfaces:
+        executor:
+          execute-workflow: receive-command(object request => object status => object status)
+          execute-command: send-command(string interface, string command, map<string, object> arguments => map<string, object> response => map<string, object> response)
+
+    #todo: waiting fix
+    genesis2: *genesis-service
+    genesis3: *genesis-service
+    genesis4: *genesis-service
+    genesis5: *genesis-service
+    genesis6: *genesis-service
+
+    keystore: &key-store-service
+      type: reference.Service
+      interfaces:
+        keypair-store:
+          get-keypair: receive-command(string id => object privateKey)
+
+    #todo: waiting fix
+    keystore2: *key-store-service
+    keystore3: *key-store-service
+    keystore4: *key-store-service
+    keystore5: *key-store-service
+    keystore6: *key-store-service

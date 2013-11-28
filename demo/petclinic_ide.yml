@@ -1,0 +1,107 @@
+application:
+  configuration:
+    #todo: use same config for both... waiting for #1930
+    petclinic.fork: qubell
+    petclinic.branch: HEAD
+    tester.fork: qubell
+    tester.branch: HEAD
+    tester.repo: starter-java-web
+  interfaces:
+    petclinic:
+      fork: bind(petclinic#input.app-fork)
+      branch: bind(petclinic#input.app-branch)
+    tester:
+      fork: bind(ide.workflow#input.fork)
+      branch: bind(ide.workflow#input.branch)
+      repo: bind(ide.workflow#input.repo)
+      test: bind(ide.workflow#actions.test)
+    test-results:
+      report: bind(functional-tester#analyse.published-atdd)
+    chart:
+      progress: bind(functional-tester#chart.progress)
+    frame:
+      recent-results: bind(functional-tester#frame.https-direct)
+
+  bindings:
+    - [functional-tester, ide.workflow]
+    - [petclinic, ide.workflow]
+  components:
+    ide:
+      bindings:
+        - [genesis, workflow]
+      components:
+        genesis:
+          type: reference.Service
+          interfaces:
+            executor:
+              execute-workflow: receive-command(object request => object status => object status)
+              execute-command: send-command(string interface, string command, map<string, object> arguments => map<string, object> response => map<string, object> response)
+
+        workflow:
+          type: workflow.Instance
+          interfaces:
+            functional:
+              test: send-command(string base-url, string app-fork, string app-branch, string app-repo, string tag  => string test-progress, string test-run-id, string stamp)
+            petclinic:
+              entry: consume-signal(string)
+            input:
+              fork: configuration(string)
+              branch: configuration(string)
+              repo: configuration(string)
+            actions:
+              test: receive-command(string tag)
+
+          required: [functional, petclinic]
+          configuration:
+            configuration.workflows:
+              launch: 
+                steps: []
+              destroy: 
+                steps: []
+              test:
+                steps:
+                  - getProperties:
+                      action: getEnvironmentProperties
+                      phase: get-props
+                      output:
+                        signals: result
+                  - test:
+                      action: serviceCall
+                      precedingPhases: [ get-props ]
+                      parameters:
+                        service: functional
+                        command: test
+                        timeout: 600 #10 mins to test
+                        arguments:
+                          base-url: "{$.signals.petclinic.entry}"
+                          app-fork: "{$.fork}"
+                          app-branch: "{$.branch}"
+                          app-repo: "{$.repo}"
+                          tag: "{$.tag}"
+
+    functional-tester:
+      type: reference.Submodule
+      configuration:
+        __locator.application-id: "Functional Tester"
+      interfaces:
+        develop:
+          test: receive-command(string base-url, string app-fork, string app-branch, string app-repo, string tag  => string test-progress, string test-run-id, string stamp)
+        analyse:
+          published-atdd: publish-signal(string)
+        chart:
+          progress: publish-signal(string)
+        frame:
+          https-direct: publish-signal(string)
+
+    # todo: replace with Submodule...
+    petclinic:
+      type: reference.Submodule
+      configuration:
+        __locator.application-id: "PetClinic"
+      interfaces:
+        endpoints:
+          entry: publish-signal(string)
+        input:
+          app-fork: "configuration(string)"
+          app-branch: "configuration(string)"
+
