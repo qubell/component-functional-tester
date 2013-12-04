@@ -5,7 +5,7 @@ kit:
     - name: "PetClinic Ide (main)"
       manifest: "https://raw.github.com/qubell/component-functional-tester/master/demo/petclinic_ide.yml"
     - name: "Selenium Grid"
-      manifest: "https://dl.dropboxusercontent.com/u/15604911/Manifests/PetClinicIde2/selenium-grid-manifest.yml"
+      manifest: "https://raw.github.com/qubell/component-selenium-grid/master/selenium-grid-manifest.yml"
     - name: "Functional Tester"
       manifest: "https://raw.github.com/qubell/component-functional-tester/master/functional_tester.yml"
     - name: "PetClinic"
