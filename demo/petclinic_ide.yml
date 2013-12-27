@@ -14,6 +14,7 @@ application:
       fork: bind(ide.workflow#input.fork)
       branch: bind(ide.workflow#input.branch)
       repo: bind(ide.workflow#input.repo)
+    tester-manage:
       test: bind(ide.workflow#actions.test)
     test-results:
       report: bind(functional-tester#analyse.published-atdd)
